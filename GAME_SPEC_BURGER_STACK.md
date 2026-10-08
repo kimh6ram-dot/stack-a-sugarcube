@@ -1,0 +1,1229 @@
+# GAME_SPEC_BURGER_STACK
+
+> 게임명: 햄버거 쌓기  
+> 영문명: Burger Stack  
+> 네임스페이스: BS  
+> 기준일: 2026-09-29 (v1) → 2026-09-29 개정 (v2)  
+> 게임 유형: 타이밍 / 균형 쌓기 / 최고기록형 모바일 미니게임
+
+---
+
+## v2 개정 안내 (정본)
+
+**이 문서는 v2가 정본이다.** v1은 "빗나간 부분만 잘리고 폭이 줄어드는" 고전 Stack 게임
+방식이었다. v2에서는 이 방식을 **전부 폐기**했다.
+
+핵심 변경:
+
+```
+재료는 끝까지 원본 크기(폭·높이)를 유지한다.
+→ 접촉 기반으로 맞닿아 쌓인다(간격 없음).
+→ 착지마다 스택 전체의 중심/지지 안정성을 계산한다.
+→ SAFE(정상) / UNSTABLE(위태로움) / COLLAPSE(붕괴) 3단계로 판정한다.
+→ COLLAPSE면 약 1.5초 동안 스택이 실제로 무너지는 모습을 보여준 뒤 게임을 종료한다.
+```
+
+이미지 clipping, source crop, overlapWidth만큼 width를 줄이는 로직, cut piece 생성
+로직은 코드에서 전부 제거했다(§15 참고). 아래 본문은 v2 기준으로 전면 재작성했다.
+
+---
+
+## 1. 게임명 · 목표 · 메인 카피
+
+### 게임명
+
+햄버거 쌓기
+
+### 한 줄 목표
+
+화면 상단에서 좌우로 움직이는 햄버거 재료를 타이밍에 맞춰 떨어뜨려,
+중심을 잃지 않게 최대한 높이 쌓는다.
+
+### 핵심 규칙 (v2)
+
+재료는 원본 크기를 잃지 않는다. 대신 착지 위치가 아래 재료·스택 전체 중심에서
+얼마나 벗어났는지에 따라 **SAFE → UNSTABLE → COLLAPSE** 3단계로 갈린다.
+COLLAPSE가 뜨면 스택이 실제로 무너지는 연출 후 게임 오버.
+
+### INTRO 화면
+
+- 메인 제목: `안 무너지게\n쌓으세요`(작은 라벨 `햄버거 쌓기`는 2026-10-01 피드백으로
+  제거 — 제목 카피만 남긴다)
+- 비주얼: 완성된 햄버거 1개(bottom_bun·patty·cheese·lettuce·tomato·top_bun를 실제
+  접촉 규칙 그대로 쌓은 정적 프리뷰, `src/main.js`의 `drawIntroPreview()`가 그린다)
+- CTA: `시작하기`
+- 좌상단에 계정 워터마크(§21 참고)
+
+---
+
+## 2. 핵심 행동 · 플레이 감각
+
+### 핵심 행동
+
+유저가 하는 행동은 단 하나다. 화면 상단의 고정된 라인에서 좌우로 움직이는
+재료를 보고 원하는 순간 입력한다.
+
+### PC / 모바일 / 금지 조작 — §12, §13 참고
+
+드래그, 방향키 이동, 힘 게이지, 각도 조절은 모두 금지(v1과 동일하게 유지).
+
+### 손맛 — "잡고 있다가 놓는 느낌" (v2 신설)
+
+입력 한 번은 아래 3단계로 이어지는 **하나의 연속된 물리 동작**이어야 한다(§9).
+
+```
+HOLD(좌우 이동) → RELEASE(정지 + 미세 처짐) → FALL(가속 낙하) → LAND IMPACT(압축→복귀)
+```
+
+- **RELEASE**: 입력 즉시 좌우 이동 정지. 약 0.06~0.10초 동안 2~4px만 아래로
+  처지는 느낌(위로 튀는 모션 금지, scale 변화 없음).
+- **FALL**: RELEASE 종료 위치에서 착지 지점까지 **고정 시간**(약 0.38~0.50초)
+  동안 ease-in(처음 느리게, 갈수록 빠르게)으로 낙하. 거리와 무관하게 시간은 고정.
+- **LAND IMPACT**: 착지 순간 Y축으로 2~4px 압축 후 0.10~0.16초 안에 복귀.
+  "묵직한 책이 탁 덮이는" 느낌. 과도한 bounce·회전 없음(§8).
+
+밧줄·손·집게 같은 별도 그래픽은 추가하지 않는다. 고정 높이 좌우 이동 + 입력 시
+즉시 정지 + 짧은 release + 중력 낙하, 이 네 가지만으로 "잡고 있다가 놓았다"는
+인상을 만든다.
+
+---
+
+## 3. 오브젝트 · 이미지 에셋
+
+`assets/01_burger/`의 실제 PNG 10장(2172×724, 알파 채널 포함)을 그대로 사용한다.
+CSS/SVG/Canvas 도형으로 새로 그리지 않는다. (v1과 동일, 변경 없음)
+
+- 시작 재료: `bottom_bun` (게임 시작 시 고정 배치, 랜덤 등장 안 함)
+- 일반 재료(랜덤, 동일 재료 3연속 금지): `patty` `cheese` `lettuce` `tomato`
+  `onion` `egg` `bacon` `middle_bun`
+- `top_bun`: 이번 버전에서는 **사용하지 않는다.** 일반 재료로도, 종료 연출로도
+  등장하지 않는다(§10). 향후 별도 성공/특수 조건에서 쓸지는 추후 결정.
+
+### 에셋 처리 (v2 갱신)
+
+- 원본 PNG는 알파 bbox로 크롭 + 2배 축소 + base64로 내장한다
+  (`tools/build-sprites.js` → `src/game/sprites-data.js`, file://에서도 캔버스
+  오염 없이 동작). 파이프라인 자체는 v1과 동일.
+- **재료는 항상 소스 이미지 전체(`sprite.bbox` 전체 영역)를 그린다.** 부분
+  source crop은 어떤 상황에서도 발생하지 않는다(§8, §15).
+- **접촉 기준점(contactTop/contactBottom)** — v1에는 없던 개념. **1차 실측(가로
+  전체 폭 기준 row-width 프로파일)은 틀렸다.** 베이컨의 굴곡·양상추 끝단처럼
+  좌우로 삐져나온 실루엣 때문에 재료별 top/bottom이 왜곡되어, 오히려 실제보다
+  더 벌어져 보이는 결과가 나왔다(2026-09-29 재수정 전 상태).
+  **재수정**: alpha 임계값을 24부터 230까지 올려가며 "가로 중앙 55%" 열만
+  조사했더니, 모든 재료가 그 중앙 열에서는 bbox 최상단부터 최하단까지 거의
+  완전히 불투명했다(투명/반투명 여백이 사실상 없음). 즉 재료별로 다른 trim이
+  필요한 게 아니라, **전 재료 공통 `{top:0, bottom:1}`** 이 올바른 값이었다.
+  `config.js`의 `BS.CONFIG.INGREDIENT_CONTACT`에 그대로 반영했다.
+
+  쌓을 때는 아래 재료의 `topY + visualHeight*contactTop`("이 재료의 진짜 윗면",
+  현재는 top=0이므로 사실상 `topY` 그대로)과 새 재료의
+  `visualHeight*contactBottom`을 맞붙이고, 거기서 `CONTACT_OVERLAP_PX`(정한
+  값, 8px — 베이컨·양파는 `INGREDIENT_EXTRA_OVERLAP`로 추가 보정)만큼 더
+  파고들게 한다. **부호 주의**: overlap은 새 재료를 접촉선보다 "더 아래로"
+  밀어야 실제로 겹친다 — 최초 구현은 반대 부호(`-overlap`)로 계산해
+  overlap 값을 올릴수록 오히려 간격이 벌어지는 버그가 있었다(2026-09-29
+  브라우저 alpha 채널 실측으로 발견·수정, `BS.landingTopY` 참고). 헤드리스로
+  캔버스 픽셀을 직접 읽어(`ctx.getImageData`의 **alpha 채널**로 배경 판정 —
+  RGB가 흰색인지를 볼 게 아니라, 캔버스의 빈 영역은 원래 완전 투명
+  `rgba(0,0,0,0)`이지 흰색이 아니다) bottom_bun+bacon, bacon+onion,
+  onion+patty, patty+tomato, tomato+cheese, cheese+lettuce, lettuce+egg,
+  egg+middle_bun, middle_bun+patty 9개 조합 전부 실측 gap **0px**를
+  확인했다(`tools/measure-contact-gaps.js`, §19).
+
+---
+
+## 4. 플레이 공간 · 시작 위치 · 좌우 이동 범위
+
+모바일 세로 화면 기준, 게임 콘텐츠 최대 폭 약 430px. (v1과 동일)
+
+**재료 폭은 모든 재료·모든 상황에서 고정이다.**
+
+```
+W = LOGICAL_WIDTH(375) * INITIAL_STACK_WIDTH_RATIO(0.36) = 135px
+```
+
+v1에는 있던 "초기 폭의 65~75% 범위 안에서 튜닝"이라는 표현은 유지하되, 이제는
+**게임 시작부터 끝까지 이 폭 그대로**다. overlap 결과에 따라 줄어드는 일은
+없다(§7, §15).
+
+### 좌우 이동 범위 (0.70 → 0.56 → 0.50 → 0.42 → 0.36, 2026-10-01 최신 — §7의 안정성
+### 판정이 실제로 의미가 있으려면 필수 + "좌우 폭을 더 넓게" 피드백)
+
+처음 폭 비율을 0.70으로 뒀을 때는 재료가 stage 폭의 70%를 차지해 좌우로
+움직일 수 있는 여유(travel)가 재료 폭의 30%뿐이었다. 그 결과 **아무리
+가장자리로 몰아 쌓아도 supportRatio가 0.69 밑으로 내려가지 않아 물리적으로
+COLLAPSE에 도달할 수 없었다** — 게임이 안 무너지던 정확한 원인이다. 이후
+여러 차례(0.56→0.50→0.42) 더 줄였는데도 "좌우로 움직이는 폭이 더 넓었으면"
+피드백이 다시 있어 0.36까지 더 줄였다.
+
+```js
+GAME_LEFT = 0,  GAME_RIGHT = LOGICAL_WIDTH(375)   // stage 기준, 스택 위치와 무관하게 고정
+SPAWN_MIN_X = PLAY_MARGIN(4)
+SPAWN_MAX_X = LOGICAL_WIDTH - PLAY_MARGIN - W      // 375 - 4 - 135 = 236
+travel = SPAWN_MAX_X - SPAWN_MIN_X = 232px         // W의 약 172%(travel/W ≈ 1.72)
+```
+
+`MOVE_MIN_X`/`MOVE_MAX_X`는 **stage 좌표계에 고정**하고, 현재 스택의 위치나
+폭으로 좁히지 않는다(§4 요청 그대로 — 스택이 어디에 있든 반대쪽/바깥쪽에
+놓을 수 있어야 한다). 이 travel/W 비율(0.36 + margin 4 ≈ 1.72)로:
+
+- 이미 한쪽으로 치우친 스택 기준 반대 극단으로 놓으면 overlap이 아예 없는
+  경우(supportRatio 음수)까지 나온다 — `COLLAPSE_SUPPORT_RATIO`(0.42)를
+  확실히 넘는다.
+- 정중앙 스택 기준 첫 이동만으로도 극단까지 몰면 supportRatio 약 0.141로
+  이미 `COLLAPSE_SUPPORT_RATIO` 아래다 — 좌우 폭이 넓어진 만큼 **극단적인
+  첫수 한 번만으로도 1층에서 즉시 COLLAPSE가 날 수 있다**(의도된 트레이드오프:
+  폭을 넓힌 만큼 손 떨림 하나의 리스크도 커진다. 실측 §19 참고).
+
+---
+
+## 5. 조작
+
+### 입력 — PC(Space) 추가 (v2)
+
+```
+모바일: pointerdown(터치) 1회 → drop
+PC    : 마우스 클릭 1회 → drop
+PC    : Space bar 1회 → drop   ← v2 신설
+```
+
+셋 다 **같은 함수 하나**(`BS.play.drop()`)를 호출한다. 입력 종류별로 게임
+로직을 따로 만들지 않는다.
+
+```js
+pointerdown → BS.play.drop()
+Space keydown → BS.play.drop()
+```
+
+### Space 처리 조건 (v2)
+
+- `PLAYING` 상태에서만 실질적으로 동작(그 외 상태에서는 `drop()` 내부 가드가
+  무시한다 — 입력 레이어에서 상태를 이중으로 검사하지 않는다).
+- `event.repeat === true`(키를 계속 누르고 있는 자동 반복)는 무시.
+- `code === 'Space'`만 반응.
+- `preventDefault()`로 페이지 스크롤 방지.
+- `document.activeElement`가 INPUT/TEXTAREA/BUTTON/SELECT면 무시(이 페이지엔
+  텍스트 입력이 없지만 안전장치로 유지).
+
+### 모바일 — 변경 없음
+
+`touch-action: none`은 게임 캔버스에만 적용. 더블탭 확대 등 브라우저 기본
+동작이 게임을 방해하지 않게 한다.
+
+---
+
+## 6. 모델 · 상태값 · 스폰 라인 · 스택 스크롤
+
+### Stack layer (v2 — width는 항상 고정값 W, source crop 필드 없음)
+
+```js
+{
+  ingredient,
+  x, topY,              // 월드 좌표
+  width,                 // 항상 W(고정), 착지 결과로 변하지 않는다
+  visualHeight,           // 재료별 고정(아래 식)
+  tier,                   // 'safe' | 'unstable' | 'collapse' | null(바닥)
+  perfect,
+  // 붕괴 애니메이션 전용(평소에는 0/false, §9)
+  collX, collY, collAngle, collVX, collVY, collAngVel,
+  collActive, collDetached, collDetachAt, collHeightFactor
+}
+```
+
+`sourceLeft`/`sourceWidth`(v1의 클리핑 크롭 필드)는 완전히 삭제했다(§15).
+
+### visualHeight
+
+```js
+visualHeight(id) = W / (sprite.bbox.w / sprite.bbox.h)
+```
+
+재료별로 다르며(치즈·베이컨·미들번이 얇고, 패티·번 종류가 두꺼움), **착지
+결과와 무관하게 항상 이 값 그대로**다. width가 줄지 않으므로 세로로
+찌그러뜨릴 필요도 없다(v1 §16, §7 "재료별 시각 높이" 원칙 유지).
+
+### 접촉 기반 착지 위치 (v2 핵심 — §3의 접촉 기준점 사용)
+
+```js
+contactLineWorldY = 아래재료.topY + 아래재료.visualHeight * 아래재료.contactTop  // 현재 contactTop=0
+새재료.topY = contactLineWorldY - 새재료.visualHeight * 새재료.contactBottom - CONTACT_OVERLAP_PX  // contactBottom=1
+```
+
+맨 아래 `bottom_bun`만 예외로, 월드 바닥선(`y = 0`)에 밑면이 닿도록
+`topY = -visualHeight`로 둔다(그 아래는 "재료"가 아니라 바닥이므로 접촉 보정을
+적용하지 않는다).
+
+### 스폰 라인 고정 + 스택(월드) 스크롤 (v2 신설)
+
+v1에는 "카메라가 스택 top을 따라간다"는 개념이 있었지만, 실제로는 현재
+재료의 화면 위치도 함께 흔들려 보이는 문제가 있었다. v2는 이를 완전히
+분리한다.
+
+```
+현재 움직이는 재료 화면 y = PLAY_TOP_PADDING + HUD_HEIGHT + HUD_TO_GAME_GAP
+                          (HUD 바로 아래, 층수와 무관하게 항상 고정)
+
+스택(월드) = 최상단 레이어가 "스폰 라인 + 최소 낙하거리"보다 위로 올라오면
+             월드 전체를 아래로 부드럽게(easing) 스크롤한다.
+```
+
+- `PLAYING`/`RELEASE` 상태의 현재 재료는 **화면 좌표(screen space)** 로 직접
+  움직인다(카메라와 무관, 절대 흔들리지 않음).
+- `drop()`이 호출되는 순간 그 화면 좌표를 월드 좌표로 환산해 "놓는다"
+  (`worldY = screenY + cameraY`). 이후 `FALL`/`LAND IMPACT`/착지 후에는
+  월드 좌표로 존재하며 카메라 변환을 거쳐 그려진다.
+- 새 재료는 스폰 시점에 **이미 스폰 라인 위**에 나타난다. 화면 밖에서
+  내려오는 추가 낙하 연출은 넣지 않는다(§9 "스폰 애니메이션 없음").
+
+### 바닥 기준선 동적 재계산 — 뷰포트 리사이즈/줌 대응 (2026-10-01 신설)
+
+**이전 버그**: `updateStageSize(w, h)`가 `stageW`/`stageH`만 갱신하고
+`cameraY`를 다시 계산하지 않았다. `reset()` 시점에 한 번 계산된 카메라
+값이 그대로 고정돼, 이후 창 높이를 줄이거나 브라우저 줌을 바꿔 뷰포트가
+변해도 바닥 기준선은 "그때 그 자리"에 머물렀다 — 그 결과 `bottom_bun`이
+실제 화면 하단과 분리되어 허공에 뜬 것처럼 보였다.
+
+**수정**: 카메라 목표치를 매번 같은 함수로 계산해 재사용한다.
+
+```js
+function computeCameraTarget() {
+  var floorAnchor = C.PLAY_FLOOR_PADDING - stageH; // "지금 이 순간의" stageH 기준
+  var top = topLayer();
+  if (!top) return floorAnchor;
+  var neededMin = BS.spawnScreenY() + C.MIN_DROP_DISTANCE;
+  var corridorAnchor = top.topY - neededMin;
+  return Math.min(floorAnchor, corridorAnchor); // 더 제약이 센(더 아래로 미는) 쪽
+}
+```
+
+- `floorAnchor`는 고정 px 값이 아니라 **매 호출 시점의 `stageH`로 다시
+  계산**된다 — 이것이 "고정 floorY 금지" 요구사항의 구현이다.
+- `updateStageSize(w, h)`는 리사이즈 즉시 `cameraY = cameraTargetY =
+  computeCameraTarget()`로 **스냅**한다(천천히 따라가면 그 사이 "떠 보이는"
+  구간이 생기므로 easing 없이 즉시 반영).
+- `update()`의 매 프레임 로직도 기존의 `Math.min(cameraTargetY, candidate)`
+  래칫(단조 감소 강제)을 제거하고 `cameraTargetY = computeCameraTarget()`를
+  그대로 쓴다 — 창이 다시 커져 바닥 기준선이 덜 제약적으로 바뀌는 경우에도
+  카메라가 그쪽으로 되돌아올 수 있어야 하기 때문이다(스택 자체가 줄어드는
+  일은 없으므로 일반 플레이 중 단조성은 자연히 유지된다).
+- `window.resize` / `window.orientationchange` / `window.visualViewport`의
+  `resize` 이벤트를 모두 동일한 `handleResize()`로 연결해 모바일 주소창
+  변화·화면 회전·브라우저 줌까지 같은 경로로 처리한다(`src/main.js`).
+- 리사이즈는 **스택 전체를 가리키는 `cameraY` 하나만** 재계산한다 — 레이어
+  개별 `topY`/간격(overlap)은 전혀 건드리지 않으므로 스택 모양은 리사이즈
+  전후로 완전히 동일하다.
+- `.app { height: 100dvh (100vh 폴백); overflow: hidden }`이 이미 적용돼
+  있어 PLAY 화면이 스크롤 가능한 페이지로 바뀌지 않는다(`src/styles/main.css`).
+- 검증: `tools/qa-floor-resize.js` — 390×844/650/568, PC 창 높이
+  900→700→550, 줌 100/125/150% 상당 뷰포트 축소, 플레이 도중 리사이즈
+  전부에서 바닥과 화면 하단 사이 거리가 논리 px 기준 정확히
+  `PLAY_FLOOR_PADDING`(16px)으로 유지됨을 확인(2026-10-01, 전체 통과).
+  CSS px로 보면 뷰포트 폭에 비례해 거리가 커지는데(예: 폭 430에서는
+  18.35px), 이는 `scale = cssW/LOGICAL_WIDTH`로 다른 모든 요소(여백,
+  재료 폭 등)와 동일하게 비례 스케일되기 때문이며 버그가 아니다.
+
+---
+
+## 7. 안정성 판정 v3 (정본 — "바로 아래 재료와 겹치면 성공"이 아니다)
+
+### v3 개정 배경
+
+v2(2026-09-29 오전)는 "새 재료 대비 로컬 오프셋" + "스택 전체 평균 중심 대비
+바닥 오프셋" 두 값만 봤다. 실측 결과 이 방식은 **재료끼리 서로 60~70%씩
+겹쳐 있어도 상단 전체 무게가 한쪽으로 크게 쏠린 경우를 못 잡았다** — 각
+인접 쌍은 "적당히 겹쳐 보이지만" 그 위에 층층이 올라간 재료들의 무게중심이
+결국 지지 범위를 벗어나는 상황을 로컬/전역 평균 하나로는 구분할 수 없었기
+때문이다. v3는 **스택의 모든 접점(interface)마다 개별 검사**한다.
+
+### 접점(interface)별 판정
+
+레이어가 `N`개면 접점은 `N-1`개(`layer[i]`와 `layer[i+1]` 사이, `i=0..N-2`).
+각 접점마다:
+
+```js
+supportLeft   = max(layer[i].left, layer[i+1].left)
+supportRight  = min(layer[i].right, layer[i+1].right)
+supportWidth  = supportRight - supportLeft
+supportRatio  = max(0, supportWidth) / layer[i+1].width
+
+upperCOM = average(centerX of layer[i+1 .. top])   // 동일 가중치(모든 재료 weight=1)
+supportCenter    = (supportLeft + supportRight) / 2
+normalizedMargin = min(upperCOM-supportLeft, supportRight-upperCOM) / supportWidth
+                   // 0.5=완전 중앙, 0=가장자리, 음수=지지 구간 밖(공중에 떠 있음)
+```
+
+`upperCOM`은 "이 접점 위에 올라간 모든 재료"의 평균이므로, 층이 늘어날수록
+그 위에 새로 쌓이는 재료가 이 평균을 계속 갱신한다 — 한 층씩은 겹침이
+충분해도(supportRatio 자체는 높아도), 위에 쌓인 덩어리 전체의 무게중심이
+서서히 한쪽으로 밀리면 `normalizedMargin`이 줄어들며 위험 신호를 준다.
+
+```js
+supportRatio < COLLAPSE_SUPPORT_RATIO(0.42)   또는
+normalizedMargin < COLLAPSE_COM_MARGIN(0.10)  → 그 접점은 COLLAPSE
+
+supportRatio >= SAFE_SUPPORT_RATIO(0.60)  그리고
+normalizedMargin >= SAFE_COM_MARGIN(0.22) → 그 접점은 SAFE
+
+그 사이                                    → UNSTABLE
+```
+
+### 전체 판정 = 가장 먼저(가장 아래에서) 발견되는 COLLAPSE 접점
+
+접점을 `i=0`(바닥에 가장 가까움)부터 위로 스캔한다. **COLLAPSE인 접점을
+처음 만나는 순간 그 접점이 실제 붕괴 지점(`collapsePivotIndex`)이다** —
+그보다 위의 접점 상태는 더 볼 필요가 없다(그 위는 전부 함께 넘어가므로).
+COLLAPSE가 하나도 없으면, UNSTABLE 중 severity(위험도)가 가장 큰 접점을
+대표로 삼는다(흔들림 연출·방향 결정용). 전부 SAFE면 SAFE.
+
+`direction`(무너지는/기울어지는 방향)은 그 접점의
+`sign(upperCOM - supportCenter)`로 정한다 — 무게중심이 오른쪽으로 밀렸으면
+오른쪽, 왼쪽이면 왼쪽(무작위 아님, §14 요청 그대로).
+
+### 연속 UNSTABLE 누적(버티다 지쳐 무너짐)
+
+"같은 절대 위치(가장자리)를 정확히 계속 노리는" 플레이는 재료끼리 서로는
+완벽히 정렬되어(자기들끼리 겹침 100%) 각 접점의 `upperCOM`이 더 이상
+악화되지 않는 경우가 있다 — 이 경우 이론적으로는 특정 접점 하나가 영원히
+UNSTABLE에 머무를 뿐 COLLAPSE로 악화되지 않는다(헤드리스 실측으로 확인).
+실제 물체라면 오래 불안정한 채로 버티는 것 자체가 무너지는 원인이 되므로,
+**연속으로 UNSTABLE이 `UNSTABLE_STREAK_COLLAPSE`(5)번 쌓이면** "버티다
+지쳐 무너지는" 것으로 처리해 그 접점을 강제로 COLLAPSE시킨다. SAFE가
+나오면 스트릭을 1만 회복시킨다(완전히 0으로 리셋하지 않음 — 가끔 살짝
+안전권에 들어와도 그동안 쌓인 위험이 한 번에 사라지지 않게).
+
+### 세 단계의 결과
+
+| 단계 | 폭 변화 | 스택 반응 | 게임 진행 |
+|---|---|---|---|
+| SAFE | 없음 | 없음(정상 착지) | 계속 |
+| UNSTABLE | 없음 | 스택 전체가 약하게 기울었다 버팀(§8 흔들림) | 계속 |
+| COLLAPSE | 없음 | §9의 붕괴 연출(약 1.5초) 후 게임 오버 | 종료 |
+
+COLLAPSE로 떨어진 재료도 **일단 착지는 한다**(스택에 추가되고 층수·점수에
+반영된 뒤, 붕괴 연출로 넘어간다). "충돌 시 튕겨나가 사라짐" 같은 처리는
+하지 않는다.
+
+---
+
+## 8. 착지 임팩트 · 흔들림(UNSTABLE)
+
+### 착지 임팩트 — 모든 정상 착지 공통(§2의 LAND IMPACT)
+
+- Y축 2~4px 압축 → 0.10~0.16초 안에 복귀. 오버슈트(더 튀어오름) 없음.
+- 정상 착지에서는 회전을 거의 주지 않는다.
+- **PERFECT**(중심 오차가 층수별 임계값 이하 — §11)일수록 더 단단하고 안정적으로
+  착지하는 인상을 준다(효과는 §11에서 재정의).
+
+### UNSTABLE 흔들림 (v2 신설)
+
+착지 직후 스택 전체(바닥 `bottom_bun` 중심을 피벗으로)에 짧은 감쇠 흔들림을
+준다.
+
+```js
+angle(t) = amplitude * (1 - t) * sin(t * PI) * direction   // t = 경과/WOBBLE_DECAY_MS, 0..1
+amplitude = WOBBLE_MAX_ANGLE(약 2.6도) * severity           // severity: 임계값에 얼마나 가까운지(0~1)
+```
+
+한 번 기울었다 바로 원위치로 돌아오는 단일 펄스다(왕복 진동 아님). 약
+0.55초 후 완전히 사라진다. 이 흔들림이 있는 동안에도 다음 재료 플레이는
+바로 이어진다(입력을 막지 않는다).
+
+---
+
+## 9. COLLAPSE — 무너지는 연출 v2 (정본, "폭발하듯 흩어짐" → "버티다 한쪽으로 넘어짐")
+
+즉시 GAME OVER로 넘어가지 않는다. 상태를 별도로 둔다.
+
+```
+PLAYING → RELEASE → FALL → SETTLING(착지 임팩트) → COLLAPSING(약 1.5~1.6초) → GAMEOVER
+```
+
+### v1 붕괴 방식의 문제(재수정 배경)
+
+최초 구현은 `collapsePivotIndex` 없이 **바닥(`bottom_bun`)을 제외한 모든
+레이어**를 동시에 무너뜨리고, 레이어마다 처음부터 **자기 중심**을 기준으로
+큰 각속도로 회전시켰다. 그 결과 실제 플레이 영상에서 재료가 거의 세로로
+서고(70~90도), 여러 층이 동시에 부채꼴로 펼쳐지는 부자연스러운 모습이
+나왔다. v2는 아래 3단계로 재설계했다 — **핵심은 "상단 스택 전체가 먼저
+하나의 강체처럼 지지 가장자리를 축으로 기울고, 그 다음에야 위층부터
+순차적으로 분리"되는 것이다.**
+
+### 붕괴 지점(`collapsePivotIndex`)과 붕괴 대상
+
+§7에서 찾은 COLLAPSE 접점의 인덱스가 그대로 `collapsePivotIndex`가 된다.
+`layer[0..collapsePivotIndex]`는 처음부터 끝까지 **전혀 움직이지 않는다**
+(맨 아래 `bottom_bun`뿐 아니라, 그 붕괴 지점까지는 안정적이었던 층 전부가
+그 자리에 남는다 — §18 요청 그대로). `layer[collapsePivotIndex+1 .. top]`
+만 "상단 스택"으로서 함께 무너진다.
+
+### 피벗(pivot) 좌표
+
+```js
+supportLeft/Right = overlap(layer[pivotIndex], layer[pivotIndex+1])  // §7과 동일 계산
+pivotX = collapseDirection > 0 ? supportRight : supportLeft   // 무너지는 쪽 지지 가장자리
+pivotY = layer[pivotIndex].topY                                // 그 접점의 높이
+```
+
+### 3단계 타임라인 (총 `COLLAPSE_DURATION_MS` ≈ 1.55초)
+
+| 구간 | 길이 | 내용 |
+|---|---|---|
+| 1. BRACE(버팀) | `COLLAPSE_BRACE_MS`(150ms) | 상단 스택 전체가 pivot 축으로 0°→`COLLAPSE_BRACE_ANGLE_DEG`(3°)까지만 살짝 기움. 입력 잠금, 새 재료 생성 금지 |
+| 2. TOPPLE(함께 기울기) | `COLLAPSE_TOPPLE_MS`(360ms) | 같은 pivot 축으로 3°→`COLLAPSE_TOPPLE_ANGLE_CAP_DEG`(24°)까지 **상단 스택 전체가 하나의 강체처럼** 계속 회전. 이 구간까지는 레이어가 분리되지 않는다 |
+| 3. DETACH+FALL(분리·낙하) | 나머지(약 1.0초) | 위층부터 `COLLAPSE_DETACH_STAGGER_MS`(50ms)씩 시간차를 두고 레이어가 하나씩 분리된다. 분리되는 순간의 pivot 회전각을 그대로 이어받아 독립적인 중력+속도 낙하로 전환(`COLLAPSE_DETACH_EXTRA_ANGLE_DEG`=26°까지 추가 회전 가능, 최대 24+26=50°) |
+
+### 강체 회전(1·2단계) 수식
+
+아직 분리되지 않은 레이어는 매 프레임 pivot을 기준으로 실시간 회전한다.
+
+```js
+angle(t) = (t 구간에 따라 0→3°→24°로 보간) * collapseDirection
+layer.center' = rotate(layer.center, pivot, angle(t))   // 중심 이동
+layer.collAngle = angle(t)                                // 스프라이트 자체도 같은 각도로 회전
+```
+
+24°가 TOPPLE 단계 상한이다(2026-10-02: "탑이 무너지듯이 옆으로 넘어가면
+좋겠다"는 피드백으로 기존 14°에서 올림 — 분리 후 추가 회전까지 더하면
+최대 50°까지 가지만, 여전히 세로로 서는 90°와는 충분히 거리를 둔다, §14
+"세로로 서지 않게"). 렌더러는 캔버스에서 `translate(pivot) → rotate →
+translate(-pivot)`이 아니라, 매 프레임 새 중심 오프셋(`collX`/`collY`)과
+자체 회전(`collAngle`)을 따로 계산해 적용한다(§6 레이어 필드). 붕괴
+시작 순간 흔들림(sway) 중이었다면 `layer.collSwayBaseX`로 그 기울기를
+회전의 "0도 시작점"으로 이어받는다(§22).
+
+### 분리(3단계)
+
+레이어가 자기 차례(`collDetachAt`)가 되면, 그 순간의 강체 회전 결과를
+`collX`/`collY`/`collAngle`로 "고정"한 뒤 독립 물리로 전환한다.
+
+```js
+vx0 = collapseDirection * COLLAPSE_DETACH_VX_BASE * heightFactor  // 위층일수록 heightFactor↑(0.5~1.0)
+vy0 = COLLAPSE_DETACH_VY_BASE * heightFactor                       // 처음엔 작음, 중력으로 증가
+angVel = collapseDirection * COLLAPSE_DETACH_ANGVEL * (개체별 랜덤 0.8~1.2배)
+
+매 프레임:
+vy += COLLAPSE_GRAVITY * dt
+x += vx * dt;  y += vy * dt
+angle += angVel * dt, 단 |angle| 상한 = TOPPLE_ANGLE_CAP + COLLAPSE_DETACH_EXTRA_ANGLE_DEG(20°)
+```
+
+넘어지던 방향의 수평 속도를 그대로 이어받으므로 "제자리에서 회전하며
+수직 추락"하지 않고 "옆으로 넘어지며 떨어진다"(§16, §17 요청 그대로).
+회전각은 분리 후에도 최대 약 34°(14°+20°)로 제한되어 재료가 세로로
+서는 일이 없다(§14, §28 금지 목록).
+
+화면 밖으로 완전히 사라지지 않도록 바닥(화면 하단 근처)과 좌우 화면
+경계 근처에서 속도를 죽이고 멈춘다 — 무너진 최종 모습이 결과 화면의
+배경으로 계속 보여야 하기 때문이다(§10).
+
+약 1.5~1.6초(`COLLAPSE_DURATION_MS`) 후 각 레이어의 최종 위치를 그대로
+고정하고 `GAMEOVER` 상태로 전환한다. 헤드리스 프레임 캡처(0/150/300/
+500/750/1000/1250/1500ms)로 각도가 0°→2°→10°→16~18°(분리 시작, 레이어별
+갈라지기 시작)→27~30°→34°(상한 도달 후 고정)로 자연스럽게 증가하는 것을
+확인했다(§19).
+
+---
+
+## 10. RESULT / GAME OVER (v2 — "예쁘게 완성된 햄버거로 자동 보정" 금지)
+
+v1 계획에 있던 "실패 후 top_bun을 자동으로 떨어뜨려 완성된 햄버거를 만드는"
+연출은 **넣지 않는다.** 실패했으면 무너진 모습 그대로 보여준다.
+
+- `GAMEOVER` 화면은 전체를 흰 배경으로 덮지 않는다. **뷰포트 정중앙(가로+세로,
+  `left:50%; top:50%; transform:translate(-50%,-50%)`)** 에 반투명 패널
+  (`SCORE`·`PERFECT`·`BEST`·`다시 쌓기` 버튼)을 띄우고, 그 뒤로는 §9에서
+  멈춘 붕괴된 스택이 계속 보인다. 하단 고정이 아니다(2026-09-29 재수정 —
+  처음엔 화면 하단에 붙여 두었는데, 햄버거 스택 바로 아래처럼 보여 시선이
+  분산된다는 피드백으로 정중앙으로 옮겼다). 320×568에서도 잘리지 않도록
+  패널에 `max-height`와 `overflow-y:auto`를 둔다.
+- `top_bun`은 이번 버전에서 종료 연출에도, 일반 재료로도 쓰지 않는다(§3).
+  향후 별도 성공 조건에서 쓸지는 추후 결정.
+- 결과 문구: `N층` · `SCORE n` · `PERFECT k` · `BEST b`.
+
+---
+
+## 11. PERFECT (판정 기준은 층수별로 점점 좁아짐, 효과는 유지)
+
+PERFECT 판정: 새 재료 중심과 바로 아래 재료 중심의 차이가 `PERFECT_THRESHOLD_TIERS`
+(층수 구간별) 이하면 PERFECT — **난이도 2(2026-09-29 추가)**. 층이 올라갈수록
+더 정확히 맞춰야 PERFECT가 나온다. SAFE/UNSTABLE/COLLAPSE 판정(§7)에는
+전혀 영향을 주지 않는다 — 그쪽은 층수와 무관하게 항상 같은 기준이다.
+
+```text
+1~5층      ±8px
+6~10층     ±7px
+11~15층    ±6px
+16~20층    ±5px
+21층 이상  ±4px
+```
+
+**v2에서 달라진 것**: 모든 재료가 어차피 원본 폭을 유지하므로, "PERFECT면
+폭이 유지된다"는 v1의 효과는 의미가 없어졌다. PERFECT 효과를 아래로
+재정의한다.
+
+- 점수 +1 보너스(§12 기본 +1과 합쳐 총 +2)
+- `perfectCount` +1
+- 반드시 SAFE 등급으로 처리(흔들림 없음, 착지 임팩트가 가장 단단하게)
+- 화면에 `PERFECT!` 약 0.6초 노출(과한 particle/glow/confetti 금지, v1과 동일)
+
+---
+
+## 12. 층수 · 점수 · 최고 기록 (거의 유지)
+
+- 일반 재료가 (SAFE든 UNSTABLE든 COLLAPSE든) 일단 착지하면 층수 +1, 점수 +1.
+  **COLLAPSE를 유발한 마지막 재료도 착지했으므로 층수·점수에 포함한다**
+  (v1처럼 "완전 실패 = 스택에 추가 안 함"이 아니다 — v2는 클리핑처럼 "거부"하는
+  개념 자체가 없고, 착지 후 안정성만 다르게 판정한다).
+- PERFECT면 추가 +1(§11).
+- `bottom_bun`/`top_bun`은 층수·점수에서 제외(v1과 동일, `top_bun`은 이번
+  버전에 등장하지 않으므로 사실상 무관).
+- 점수 계산에 `Math.random()`을 쓰지 않는다(v1과 동일 원칙 유지, 재료 종류
+  뽑기에만 사용).
+- 저장: `localStorage`의 `bs_best_score`(v1 계획의 `bestScore`를 그대로
+  구현). `bestLayers` 별도 저장은 이번 버전에서 하지 않음(스코프 방어, §22).
+
+---
+
+## 13. 속도 · 카메라 (난이도 1 — 2026-10-01 재개정: 상승 기준선 × 반복 파동)
+
+층수 구간별 5층 단위 계단(`SPEED_TIERS`) 방식은 폐기했다. 지금은 **1~3층은
+무조건 정상 속도 고정, 4층부터 층마다 오르는 기준선(baseline) 위에
+"오르막 → 정점 HOLD → 내리막 → 저점 통과 → 복귀" 5구간 파동을 곱하는**
+구조다(`BS.speedMultiplierForLayer`/`speedWaveAt`, `config.js`). "층수가
+오를수록 계속 조금씩 빨라지기만 한다"는 너무 밋밋하다 → "속도 편차가 더
+컸으면" → "이랬다 저랬다 하지 말고 점점 빨라졌다가 점점 느려졌다가" →
+"단계를 더 쪼개달라, 느린 건 그대로 빠른 건 더 빨라도 된다" → "빠른 상태가
+좀 더 오래 유지됐으면 좋겠다, 1~3층은 정상 속도로"까지 다섯 차례에 걸쳐
+반영했다.
+
+```js
+// 1~SPEED_NORMAL_LAYERS(3)층: 파동 없이 무조건 SPEED_BASE_MULT(1.00) 고정
+e        = layer - SPEED_NORMAL_LAYERS(3)              // 파동 활성화 후 경과 층수(4층부터 1)
+baseline = SPEED_BASE_MULT(1.00) + (e-1) * SPEED_STEP_PER_LAYER(0.05)
+// 한 주기 = QUARTER×4 + HOLD = 4×4+6 = 22층. 구간별 각도/진폭:
+//   오르막(0~90°, Q층)        : amplitude = AMPLITUDE_UP(1.00)
+//   정점 HOLD(90° 고정, H층)  : amplitude = AMPLITUDE_UP(1.00)
+//   내리막 전반(90°→180°, Q층): amplitude = AMPLITUDE_UP(1.00)
+//   내리막 후반(180°→270°,Q층): amplitude = AMPLITUDE_DOWN(0.50)
+//   복귀(270°→360°, Q층)      : amplitude = AMPLITUDE_DOWN(0.50)
+wave = 1 + amplitude * sin(angle)
+mult = min(baseline * wave, SPEED_MULT_CAP(3.20))
+```
+
+- 1~3층(`SPEED_NORMAL_LAYERS`)은 파동 계산을 아예 타지 않고 `BASE_SPEED`
+  그대로다. 공교롭게도 파동의 시작점(4층, 중립=1.0배)도 같은 값이라 3→4층
+  전환이 끊김 없이 자연스럽다.
+- 기준선은 4층(e=1)에서 1.00배로 시작해 이후 층마다 0.05씩 오른다.
+- 파동은 순수 사인이 아니라 **오르막 직후에 HOLD 구간을 끼워 넣은 비대칭
+  파형**이다. 내리막·저점·복귀 3구간(사용자가 "이미 좋다"고 한 부분)은
+  기존 사인 모양을 그대로 두고, 오르막 전용이던 자리에만 `SPEED_WAVE_HOLD_
+  LAYERS`(6층)만큼 "정점 비율 유지" 구간을 추가해 빠른 상태가 훨씬 오래
+  지속된다 — 게다가 HOLD 동안에도 기준선이 계속 오르기 때문에 정점 "비율"은
+  고정이어도 실제 px/s는 HOLD 중에도 계속 더 빨라진다.
+- 진폭은 비대칭이다 — 정점 쪽(오르막·HOLD·내리막 전반) `SPEED_WAVE_
+  AMPLITUDE_UP`(1.00, 정점=baseline×2.0), 저점 쪽(내리막 후반·복귀)
+  `SPEED_WAVE_AMPLITUDE_DOWN`(0.50, 저점=baseline×0.5).
+- 실측 예(층→px/s): 1~4층 110(정상 고정) → 5층 160 → 8층 264(정점 도달)
+  → 8~14층 264~330(HOLD, 기준선 상승으로 계속 더 빨라짐) → 18층 187(중립
+  통과) → 22층 105(저점) → 26층 231(복귀 후 재가속) → 28층부터 상한(352) 도달.
+- 절대 상한 `SPEED_MULT_CAP`(3.20)은 넘지 않는다(피크 진폭을 키운 만큼
+  상한도 2.80→3.20으로 함께 올렸다. 2주기째 HOLD 구간부터 상한에 닿기 시작).
+- 배율은 **재료가 스폰되는 순간에만** 계산해 `current.speed`에 고정한다 —
+  한 재료가 움직이는 도중에는 절대 바뀌지 않는다(헤드리스로 0.6초간 다중
+  샘플링해 값이 하나로 고정됨을 확인, §19).
+
+**15층부터**: 재료가 스폰될 때 위 배율에 `SPEED_VARIANCE_MIN~MAX`(0.9~1.1배)
+무작위 편차를 한 번 더 곱한다(그 뒤 `SPEED_MULT_CAP`으로 다시 clamp). 이
+편차도 스폰 시점에 한 번만 정해지고 그 재료가 떨어질 때까지 고정이다 —
+"예측 불가능한 갑작스러운 가속/감속"이 아니라 "이번 재료는 평소보다 살짝
+빠르거나 느리다" 정도의 작은 변주다.
+
+"카메라가 현재 재료를 따라간다"는 v1 표현은 삭제한다. v2는 반대로 **현재
+재료가 고정**이고 **스택(월드)이 스크롤**된다(§6).
+
+### 난이도 3 — 누적 무게중심이 실제 난이도
+
+층수가 높다는 이유만으로 SAFE/UNSTABLE/COLLAPSE 임계값을 조이지 않는다
+(§7 그대로 유지). 대신 §7의 `upperCOM` 계산 자체가 "그 접점 위에 올라간
+모든 재료의 평균"이므로, 층이 많아질수록 같은 방향의 작은 편차가 누적되어
+자연히 위험해진다 — 이것이 유일한 "층수 때문에 어려워지는" 메커니즘이다.
+실측: 같은 방향으로 폭의 18%씩 계속 어긋나게 쌓으면 4층에서 COLLAPSE,
+좌우를 번갈아(±15%) 쌓으면 15층까지 버틴다(§19).
+
+---
+
+## 14. 화면 흐름
+
+```
+INTRO → PLAYING → (RELEASE → FALL → SETTLING → [COLLAPSING(§9, 3단계)]) → GAMEOVER
+```
+
+`TUTORIAL`은 별도 화면으로 두지 않았다(INTRO의 안내 문구 한 줄로 대체,
+§9-old 참고). 도전장(`CHALLENGE`/`BATTLE_RESULT`)은 이번 버전에서 구현하지
+않는다(§22).
+
+### 안내 문구 (v2)
+
+```
+PC     : SPACE 또는 클릭해서 쌓기
+모바일 : 화면을 눌러 쌓기  (pointer:coarse 미디어쿼리로 판별)
+```
+
+플레이 캔버스 위에 작은 한 줄로만 표시하고, 현재 움직이는 재료와 겹치지
+않도록 그 아래에 둔다. 첫 입력 이후에는 완전히 사라지며, 재시작해도 다시
+뜨지 않는다(세션당 1회).
+
+---
+
+## 15. 제거된 것 (v1 → v2)
+
+아래는 v2에서 코드·설계 모두에서 제거했다.
+
+- 이미지 clipping / source crop
+- `sourceLeft`/`sourceWidth` 기반 레이어 필드
+- cut piece(잘린 조각) 생성·낙하·회전 로직
+- overlap 결과로 레이어/재료 `width`를 변경하는 모든 코드
+- "완전 실패 시 스택에 추가하지 않음" 개념(이제는 착지 자체는 항상 하고,
+  안정성만 다르게 판정 — §7, §12)
+- 실패 후 `top_bun` 자동 낙하로 "완성된 햄버거"를 만드는 게임오버 연출
+
+안정성 판정에 필요한 `computeOverlap`(겹침 폭 계산)과 `isPerfect`는 계속
+재사용한다 — "시각적으로 자르는 기능"만 없앴을 뿐, 겹침 폭 자체는 안정성
+계산의 입력값으로 그대로 쓰인다(§7).
+
+---
+
+## 16. UI 디자인 (컴팩트 HUD 반영)
+
+MINIGAME_SYSTEM.md §37을 정본으로 유지하되, PLAY 화면의 HUD는 아래처럼
+컴팩트하게 압축한다(INTRO/RESULT는 §37 리듬 그대로 유지, 과도하게 줄이지
+않음).
+
+```
+PLAY_TOP_PADDING = 14px
+HUD_HEIGHT       = 30px    (한 줄: "N층 · SCORE n"  ⟷  "BEST b")
+HUD_TO_GAME_GAP  = 10px
+```
+
+버튼(INTRO `시작하기`, RESULT `다시 쌓기`) 크기는 MINIGAME_SYSTEM 공통
+`--button-height`(48px) 기준을 유지한다 — 줄이는 대상은 여백/패딩이지 터치
+영역이 아니다.
+
+---
+
+## 17. 이번 버전에서 하지 않는 것 (v1과 동일하게 유지)
+
+제한시간, 목숨 시스템, 아이템, 폭탄 재료, 콤보 multiplier, 재료 선택,
+캐릭터, 상점, 광고, 랭킹 서버, 계정 로그인, 실제 rigid body 물리, 3D 물리,
+재료 회전 조작, 도전장(공유 링크로 상대와 겨루기)은 넣지 않는다.
+
+---
+
+## 18. config.js 튜닝 위치
+
+모든 수치는 `src/game/config.js`의 `BS.CONFIG`에 모여 있다. 주요 그룹:
+
+```text
+크기/폭       LOGICAL_WIDTH, PLAY_MARGIN(4), INITIAL_STACK_WIDTH_RATIO(0.36)
+속도/난이도   BASE_SPEED, SPEED_NORMAL_LAYERS, SPEED_BASE_MULT/STEP_PER_LAYER/MULT_CAP,
+              SPEED_WAVE_QUARTER_LAYERS/HOLD_LAYERS, SPEED_WAVE_AMPLITUDE_UP/DOWN,
+              SPEED_VARIANCE_START_LAYER/MIN/MAX, PERFECT_THRESHOLD_TIERS
+낙하 3단계    RELEASE_MS, RELEASE_SINK_PX, FALL_MS, LAND_IMPACT_MS, LANDING_SQUASH_PX
+접촉 배치     INGREDIENT_CONTACT{top,bottom}, CONTACT_OVERLAP_PX, INGREDIENT_EXTRA_OVERLAP
+스폰/스크롤   MIN_DROP_DISTANCE, STACK_SCROLL_EASE, PLAY_FLOOR_PADDING(16)
+안정성(v3)    SAFE_SUPPORT_RATIO(0.60), COLLAPSE_SUPPORT_RATIO(0.42),
+              SAFE_COM_MARGIN(0.22), COLLAPSE_COM_MARGIN(0.10),
+              UNSTABLE_STREAK_COLLAPSE(5)
+흔들림        WOBBLE_MAX_ANGLE, WOBBLE_DECAY_MS
+붕괴(v2)      COLLAPSE_HOLD_MS, COLLAPSE_BRACE_MS, COLLAPSE_BRACE_ANGLE_DEG,
+              COLLAPSE_TOPPLE_MS, COLLAPSE_TOPPLE_ANGLE_CAP_DEG,
+              COLLAPSE_DETACH_STAGGER_MS, COLLAPSE_DETACH_EXTRA_ANGLE_DEG,
+              COLLAPSE_DETACH_ANGVEL, COLLAPSE_DETACH_VX_BASE,
+              COLLAPSE_DETACH_VY_BASE, COLLAPSE_GRAVITY, COLLAPSE_DURATION_MS
+기타          RESULT_DELAY_MS, PERFECT_FLASH_MS, MAX_STREAK_SAME
+HUD           PLAY_TOP_PADDING, HUD_HEIGHT, HUD_TO_GAME_GAP
+```
+
+---
+
+## 19. QA — 반드시 확인할 것 (v3)
+
+### 0. 좌우 이동 범위 실측
+
+`GAME_LEFT/RIGHT`, `SPAWN_MIN/MAX_X`, 재료 폭, travel/W 비율을 로그로
+남기고, 정중앙 기준·치우친 기준 각각의 최소 supportRatio를 계산해 실제로
+`COLLAPSE_SUPPORT_RATIO`를 넘어설 수 있는지 확인한다(§4).
+
+### A. 정중앙 연속 착지(10회 이상)
+
+- 재료 사이 불필요한 흰 공간 없음 — **캔버스 픽셀을 alpha 채널로 직접
+  읽어(`getImageData`) 검증**한다(RGB 흰색이 아니라 투명 여부로 배경 판정).
+  bottom_bun+bacon / bacon+onion / onion+patty / patty+tomato /
+  tomato+cheese / cheese+lettuce / lettuce+egg / egg+middle_bun /
+  middle_bun+patty 9개 조합 모두 실측 **0px**(`tools/measure-contact-gaps.js`).
+- `BS.landingTopY` 공식으로 역산한 기대 위치와 실제 배치가 일치
+- 폭이 한 번도 줄지 않음, 전부 SAFE
+
+### 고의 실패 테스트 (CASE A~D)
+
+- **CASE A**: supportRatio ≈ 0.20으로 강제 착지 → 즉시 COLLAPSE.
+- **CASE B**: 매번 이전 재료보다 폭의 15~20%씩 같은 방향으로 착지(반복) →
+  초반 SAFE/UNSTABLE을 거쳐 10회 이내 COLLAPSE(실측: 4층에서 무너짐).
+- **CASE C**: 오른쪽/왼쪽을 번갈아(±15%) 착지 → 10층까지 안정적으로 버팀
+  (편향 플레이보다 확실히 오래 버텨야 함).
+- **CASE D**: 실제 이동 범위의 가장 오른쪽 끝에 반복 착지(영상 재현) →
+  §7의 "연속 UNSTABLE 누적" 규칙으로 5층에서 무너짐 확인. 매번 완전히
+  동일한 좌표(지터 없음)로 재현해야 결정적으로 검증된다 — 무작위 지터를
+  주면 SAFE/UNSTABLE 경계에 걸려 결과가 들쭉날쭉해진다(§7 참고).
+
+### D2. 붕괴 연출
+
+- 폭 축소·clipping 전혀 없음
+- 즉시 RESULT로 넘어가지 않음(`collapsing` 상태 확인, 0.3초 시점에도 진행 중)
+- 약 1.5초 이상 붕괴 연출 후 게임오버
+- **프레임 캡처(0/150/300/500/750/1000/1250/1500ms)**: 각도가 0°→2°→10°
+  →16~18°(분리 시작)→27~30°→34°(상한)로 자연스럽게 증가, 90도로 서는
+  프레임 없음, 레이어마다 분리 시점 이후 각도가 서로 달라짐(동일 각도로
+  뭉쳐 움직이지 않음)을 확인.
+
+### E. PC Space
+
+- 한 키 입력당 하나만 drop
+- `repeat:true`(길게 누름)는 무시
+- 연타해도 1개만 drop
+
+### F. 모바일 터치
+
+- 한 번 터치 = 한 번 drop, 연타해도 1개만 drop
+
+### 스폰 라인
+
+- 층수가 늘어도(0층, 10층 등) 현재 재료의 화면 y가 항상 동일(오차 1px 이내)
+- 스택이 일정 높이 이상이면 카메라(월드 스크롤)가 실제로 움직임
+
+### 레이아웃
+
+- 320×568 등 모바일 폭에서 가로 스크롤 없음
+- RESULT 팝업이 뷰포트 정중앙에 뜨고 320×568에서도 잘리지 않음
+
+### 바닥 기준선 리사이즈/줌 대응 (2026-10-01)
+
+- 390×844 / 390×650 / 390×568, PC 창 높이 900→700→550, 줌 100/125/150%
+  상당 뷰포트 축소, 플레이 도중 리사이즈 — 전부 바닥-화면하단 거리가
+  논리 px 기준 `PLAY_FLOOR_PADDING`과 일치
+- 리사이즈 전후 레이어 간 상대 간격(스택 모양) 완전히 동일 — `cameraY`만
+  재계산되고 개별 레이어 좌표는 불변
+- 리사이즈 후에도 스폰 라인은 그대로 상단 고정
+- 가로/세로 오버플로 없음(스크롤 페이지로 바뀌지 않음)
+
+**실행 방법**: `node tools/qa.js`(안정성·입력·회귀), `node
+tools/measure-contact-gaps.js`(접촉 gap 실측), `node
+tools/qa-floor-resize.js`(바닥 기준선 리사이즈/줌 대응, 2026-10-01 신설)
+— 모두 playwright-core + 로컬 Chrome 헤드리스. 2026-10-01 기준 위 항목
+전부 통과 확인(§6 "바닥 기준선 동적 재계산" 참고).
+
+---
+
+## 20. 완료 기준 (v2)
+
+- [x] 사용자 PNG 10종 실제 연결(9종 사용, `top_bun` 보류)
+- [x] `bottom_bun` 시작 배치
+- [x] 일반 재료 랜덤 등장(3연속 금지)
+- [x] 좌우 왕복
+- [x] 터치/클릭/Space drop
+- [x] 안정성 v3 판정(접점별 supportRatio + upperCOM 여유 + 연속 UNSTABLE 누적)
+- [x] 좌우 이동 범위가 실제로 COLLAPSE에 도달 가능(§4)
+- [x] 재료 크기 항상 유지(클리핑 완전 제거)
+- [x] 접촉 기반 배치(간격 없음, alpha 채널 실측으로 0px 확인)
+- [x] RELEASE → FALL → LAND IMPACT 낙하 모션
+- [x] 착지 사운드(Web Audio 합성 thump)
+- [x] UNSTABLE 흔들림
+- [x] COLLAPSE 붕괴 연출 v2(pivot 강체 회전 → 순차 분리 → 개별 낙하, 약 1.5초,
+      최대 회전각 34도로 제한, 세로로 서는 프레임 없음)
+- [x] PERFECT(보너스 점수 + 단단한 착지)
+- [x] 층수 · 점수 · BEST(localStorage)
+- [x] speed 상승
+- [x] 스폰 라인 고정 + 스택 스크롤
+- [x] INTRO(실제 에셋 프리뷰) / RESULT(뷰포트 정중앙, 붕괴 배경 유지) UI
+- [x] 컴팩트 HUD
+- [x] 320×568 포함 모바일 QA
+- [x] 기존 다른 프로젝트 변경 없음
+
+---
+
+## 21. 빵 얹기(수동 완성) 기능 — 2026-10-01 신설
+
+게임오버(COLLAPSE)와 완전히 별개로, 플레이어가 원하는 시점에 "여기까지 쌓은
+햄버거를 완성해서 저장"할 수 있는 보조 기능. 실패 연출이 아니라 **의도적으로
+완성하는** 기능이다.
+
+### 상태 흐름
+
+```
+PLAYING → (빵 얹기 버튼) → TOPPING(하강) → TOPPING-SETTLE(착지 임팩트) → COMPLETED
+```
+
+기존 `collapsing`/`gameover-wait`/`gameover`와 완전히 별도인 3개 상태
+(`topping`, `topping-settle`, `completed`)를 `play.js`에 추가했다(`BS.play.
+requestTopping()`). 기존 상태머신·RESULT 플로우는 전혀 건드리지 않았다.
+
+### 버튼 — "빵 얹기"
+
+- PLAY 화면 우하단 플로팅 pill 버튼(`#btn-topping`, `.topping-btn`). HUD(캔버스에
+  직접 그림)·메인 drop 조작(캔버스 전체 pointerdown)과 레이어가 분리된 별도
+  DOM 요소라 서로 가리거나 간섭하지 않는다.
+- 노출 조건: `state`가 playing/release/falling/settling 중 하나이고 `layerCount
+  >= 1`(bottom_bun만 있으면 숨김). 활성 조건: `state === 'playing'`일 때만
+  클릭 가능(낙하/정산 중엔 `disabled`로 흐려짐, 클릭 무시) — collapse 중엔
+  `state`가 playing이 아니므로 버튼이 아예 노출되지 않는다.
+
+### top_bun 배치
+
+모든 재료가 동일한 고정 폭 `W`를 공유하므로(§4), top_bun의 x는 **현재 최상단
+레이어의 x와 동일하게** 둔다 — 폭이 같아 자동으로 그 레이어 중심에 맞춰진다
+(별도 center 계산 불필요). 세로 위치는 기존 재료와 똑같이 `BS.landingTopY`
+(접촉 기준점 + `CONTACT_OVERLAP_PX`)로 계산해, top_bun과 바로 아래 재료
+사이에도 다른 재료쌍과 동일하게 뜬 공간이 없다(전용 overlap 보정값 불필요 —
+`top_bun`은 이미 `INGREDIENT_CONTACT` 표에 실측값이 있었다).
+
+### 연출
+
+스폰 라인에서 등장해 기존 낙하와 동일한 `FALL_MS` ease-in 곡선으로 착지
+위치까지 내려오고(`topping` 상태), 착지 후 기존 `LAND_IMPACT_MS`/
+`LANDING_SQUASH_PX` 압축-복귀 연출을 그대로 공유한다(`topping-settle` 상태 —
+렌더러의 `settlingTopIndex` 분기를 `topping-settle`도 타도록 확장). 새
+타이밍 상수를 만들지 않고 기존 값을 재사용해 "기존 착지감과 톤"을 그대로
+맞췄다. `topping`/`topping-settle`/`completed` 동안은 카메라(`cameraY`)를
+얼려 완성 장면이 갑자기 스크롤되지 않게 한다.
+
+### 완성 후 — 같은 판 재개 없음
+
+`requestTopping()` 호출 즉시 움직이던 `current`(미확정 조각)는 스택에 추가하지
+않고 버린다. `topping-settle` → `completed` 전환 시 top_bun을 `stack`에 영구
+push하지만 이후 `spawnNext()`를 호출하지 않으므로 새 조각이 생기지 않고,
+`drop()`은 `state !== 'playing'` 가드로 자연히 잠긴다(Space/클릭/터치 모두
+동일 가드를 공유하므로 별도 입력 잠금 코드가 필요 없었다).
+
+### COMPLETED 화면
+
+`#screen-completed` — 초기엔 화면 상단에 슬림하게 붙는 바로 만들었으나,
+"완성 팝업도 RESULT(GAME OVER)처럼 가운데 떴으면 좋겠다"는 피드백으로
+**RESULT와 동일한 뷰포트 정중앙 팝업**(`.completed-panel`, `.result-panel`과
+같은 absolute+translate(-50%,-50%) 패턴)으로 변경했다(2026-10-01). 반투명
+배경(`rgba(255,255,255,0.95)`)이라 뒤의 완성된 햄버거 캔버스가 비쳐 보인다.
+"완성했어요" 라벨 + "N층" 큰 제목 + `이미지 저장`(주 CTA) + `다시하기`/
+`메인으로`(보조 버튼). 현재 쌓은 형태를 이 화면에서 임의로 재배치하지
+않는다 — 플레이 결과 그대로 보여준다.
+
+### 이미지 저장 — 전용 export 캔버스(B안)
+
+`src/game/export.js`의 `BS.exportCompletedImage(stack, layerCount)`가
+**플레이 화면과 완전히 분리된** 1080×1920 offscreen canvas에 새로 그린다
+(뷰포트/카메라/HUD와 무관 — §16 "흔들리지 않는 고정 export layout").
+
+- 밝은 배경(#FAFAF8), 스택 전체를 감싸는 bbox를 계산해 **하나의 균일한
+  scale+translate**로 센터 배치(목표 영역: 가로 70%·세로 58%).
+  레이어 개별 재정렬은 하지 않는다 — 실제 x 위치, 약간 삐뚤어진 모양까지
+  그대로 유지(§17 금지 사항 그대로 준수: 자동 중앙정렬/형태 보정 없음).
+- 각 레이어를 실제 스프라이트(`BS.sprites.get`)로 다시 그린다(이미지 찌그러짐
+  없음, 원본 비율 유지).
+- 최소 텍스트: 버거 아래에 "N층 완성" 캡션 한 줄만(날짜·게임명·SCORE 등은
+  넣지 않음 — "잡다한 정보 없는 스크린샷" 원칙).
+- `canvas.toBlob()` → `<a download>` 트리거로 PNG 다운로드.
+  파일명 `burger-stack-YYYYMMDD-HHmmss.png`(`BS.exportFilename()`).
+- 저장 버튼은 클릭 즉시 `disabled` 처리 후 콜백에서 재활성화 — 연속 클릭으로
+  중복 다운로드가 발생하지 않는다.
+
+### 계정 워터마크 — `@ccojik.dh`(2026-10-01 신설, 2026-10-01 재배치)
+
+메인 화면·플레이 화면·저장 이미지 세 곳 모두에 작고 은은하게(`opacity 0.42`,
+`font-size` 11~12px대, `font-weight 500`) 넣는다. 처음엔 좌하단(플레이 화면)/
+우하단(메인·저장 이미지)으로 넣었다가, "맨 위 HUD 중 왼쪽 걸 가운데로 옮기고
+그 자리(맨 왼쪽)에 워터마크를 넣어달라"는 피드백으로 **플레이 화면 HUD 줄에
+통합**했다:
+
+```
+플레이 화면 HUD 한 줄 = [좌측] @ccojik.dh(워터마크) · [중앙] N층 · SCORE n · [우측] BEST n
+```
+
+기존에 좌측에 있던 "N층 · SCORE n"을 중앙 정렬로 옮기고, 비워진 좌측 자리에
+워터마크를 넣었다(`renderer.js`의 HUD 그리기 블록, `CONFIG.WATERMARK_*` 값
+재사용). 메인 화면(인트로)도 같은 좌상단 위치로 맞췄다(`.watermark` DOM,
+`left:16px; top:16px`). 저장 이미지는 이 피드백 범위 밖이라 기존 그대로
+**우하단**을 유지한다(§6 권장안). `CONFIG.WATERMARK_TEXT/FONT_SIZE/OPACITY/
+PADDING`에 값이 모여 있고, 캔버스(플레이·저장 이미지)는 이 상수를 그대로
+쓰고 DOM(메인 화면 CSS)은 같은 수치를 수동으로 맞춰뒀다(CSS가 JS 상수를
+읽을 수 없어서).
+
+### 예외 처리
+
+| 상황 | 처리 |
+|---|---|
+| collapse 중 빵 얹기 | `requestTopping()`이 `state!=='playing'`이면 즉시 return — 버튼도 애초에 숨겨짐 |
+| 낙하/정산 중 빵 얹기 | 위와 동일(해당 상태들도 playing이 아님). 버튼은 노출되지만 `disabled` |
+| 재료 0개(bottom_bun만)에서 빵 얹기 | `layerCount < 1`이면 return, 버튼도 숨김 |
+| completed 상태에서 재요청 | `state!=='playing'`이라 무시(top_bun 중복 추가 안 됨) |
+| 저장 버튼 연속 클릭 | `isSavingImage` 플래그 + 버튼 `disabled`로 방지 |
+
+### QA
+
+`tools/qa-topping.js` — 명세 §22 A~F에 해당하는 9개 시나리오(재료 1개 완성,
+삐뚤게 쌓은 뒤 완성 시 형태 보존, UNSTABLE 직전 완성 가능, collapse 중 완성
+불가, 재료 0개 완성 불가, 실제 PNG 다운로드까지 확인하는 저장 플로우, 저장
+연속 클릭 방지, completed 중복 실행 방지, 모바일 터치 환경, 기존 GAME OVER
+플로우 무회귀) 전체 통과(2026-10-01, playwright-core + 로컬 Chrome 헤드리스,
+`page.waitForEvent('download')`로 실제 다운로드 파일까지 저장해 0바이트가
+아님을 확인).
+
+---
+
+## 22. 동적 균형/좌우 흔들림(stack sway) — 2026-10-02 신설
+
+"착지 후 완전 정지"를 "중심을 잡으며 서 있는 높은 탑"으로 바꾸는 기능.
+기존 기능(이동 속도 단계, overlap, COM 판정, COLLAPSE 연출, 빵 얹기, 워터마크
+등)은 전혀 건드리지 않고, 이 동적 흔들림만 추가했다. **이전의 `WOBBLE_MAX_
+ANGLE`/`WOBBLE_DECAY_MS`(착지 직후 짧게만 흔들리는 단순 연출)는 완전히
+제거하고 이 시스템으로 대체했다** — 둘을 동시에 두면 회전이 이중으로 겹친다.
+
+### 핵심 상태 (`play.js`)
+
+```
+stackTilt            현재 실제 기울기(rad)
+stackAngularVelocity 현재 각속도(rad/s)
+stackTargetTilt      이번 프레임 COM 기준 목표 기울기(rad)
+swayCollapseTimer    흔들림만으로 위험 구간에 머문 누적 시간(ms)
+```
+
+### Pivot과 "전단(shear)" — 회전이 아니다
+
+전체가 한 덩어리로 빙글빙글 도는 게 아니라(§14 금지), **바닥(`bottom_bun`의
+밑면, 월드 y=0)을 pivot**으로 두고 레이어마다 "pivot으로부터의 높이"에
+비례해 좌우로 shear(전단)시킨다 — 바닥은 거의 그대로, 위로 갈수록 많이
+움직인다.
+
+```js
+heightAboveBase(layer) = -(layer.topY + layer.visualHeight)   // 월드 y=0이 바닥
+shearOffsetX(layer) = heightAboveBase(layer) * tan(stackTilt) * TILT_COM_FACTOR
+```
+
+`bottom_bun`은 `heightAboveBase=0`이라 구조적으로 절대 좌우로 미끄러지지
+않는다(§22 금지 목록 "bottom bun이 미끄러짐" 자동 충족). 이 shear 공식
+하나를 **렌더링(`renderer.js`)과 물리 판정(아래) 양쪽이 그대로 공유**해서
+"보이는 대로 판정"이 항상 성립한다(§12~13).
+
+### 목표 기울기 — 정적 COM 기반, 층수별 민감도
+
+```js
+comX = 전체 stack의 x+width/2 평균 (정적/정지 좌표 — 순환 의존 방지)
+normalizedOffset = (comX - baseCenterX) / (baseWidth/2)   // -1~1
+rawDeg = normalizedOffset * BALANCE_SENSITIVITY_BY_LAYER[layer] * BALANCE_TILT_BASE_DEG
+targetDeg = clamp(rawDeg, ±BALANCE_MAX_TILT_BY_LAYER[layer])
+targetDeg = clamp(targetDeg, ±MAX_NORMAL_TILT)   // 전 층수 공통 최종 안전망
+```
+
+`BALANCE_TILT_BASE_DEG`는 §25 목록엔 없지만 추가한 보정 상수다 — §5의
+sensitivity 표(0.45~2.10)를 그대로 "도(degree)"로 쓰면 §6이 요구하는 범위
+(1~3층 ±0.5도 ↔ 16층+ ±5~6도, 약 11배 차)에 비해 sensitivity 자체의 비율폭
+(약 4.7배)이 너무 좁아 양쪽을 동시에 맞출 수 없었다. 처음엔 2.3으로 뒀는데
+**실제 헤드리스 플레이테스트에서 무작위 손 떨림 수준의 편차가 전체 평균에
+묻혀 10층 이상에서도 체감 기울기가 0.1~0.3도에 그쳤다** — 8.0으로 올려
+재측정하니 다양한 방향으로 어긋나게 쌓는 현실적인 플레이에서 9~12층 구간이
+2.4~4.2도까지 올라가 §6 목표 범위(10~12층 ±3.0~4.0도)에 실제로 들어왔다.
+이후 "탑이 무너지듯이 옆으로 넘어가면 좋겠다"는 피드백으로 한 번 더
+올렸다(8.0→11.0, 층수별 상한 `BALANCE_MAX_TILT_BY_LAYER`/`MAX_NORMAL_TILT`도
+함께 상향) — 평소 흔들림 자체가 "진짜 넘어갈 듯"하게 더 크게 보이도록
+(§26 참고).
+
+### 스프링-댐퍼 — target으로 바로 이동하지 않음
+
+```js
+angularAccel = (targetTilt - tilt) * BALANCE_SPRING
+angularVelocity += angularAccel * dt
+angularVelocity *= Math.pow(BALANCE_DAMPING, dt)   // "초당 유지비율"로 해석해
+                                                     // 프레임레이트 무관하게 감쇠
+tilt += angularVelocity * dt
+```
+`BALANCE_DAMPING`(0.15)은 "1초 뒤 각속도가 15%만 남는다"는 뜻으로, 매 프레임
+`Math.pow(0.15, dt)`를 곱해 적용한다 — 저층에서는 몇 번 진동 후 금방
+가라앉고, 고층에서는(목표가 더 자주/크게 바뀌므로) 다음 재료가 올 때까지도
+잔진동이 남는 경우가 흔하다(§8). 댐핑 상수 자체는 층수와 무관하게 하나만
+쓴다 — 설계상 §25가 `BALANCE_DAMPING`을 층수별 표가 아닌 단일 값으로
+요구했고, 실제로도 진폭(sensitivity가 좌우)이 커질수록 "눈에 보이는 수준
+아래로 가라앉는 데 걸리는 시간"이 자연히 길어지므로 댐핑 자체를 층수별로
+나눌 필요가 없었다.
+
+### 착지 balance impulse + PERFECT 보상
+
+`finalizeDrop()`에서 착지 직후:
+
+```js
+supportCenterX = 흔들림 보정된 상단 레이어 중심
+landingOffset  = 새 재료 중심 - supportCenterX
+impulse        = (landingOffset/(재료폭/2)) * LANDING_BALANCE_IMPULSE * sensitivity[layer]
+if (perfect) {
+  impulse *= (1 - PERFECT_BALANCE_DAMPING)   // "매우 작게"(25%만)
+  stackAngularVelocity *= PERFECT_BALANCE_DAMPING
+  stackTilt *= PERFECT_BALANCE_DAMPING        // 중앙 쪽으로 살짝만 보정(완전 수직화 금지)
+}
+stackAngularVelocity += impulse
+```
+`PERFECT_BALANCE_DAMPING`(0.75) 하나로 "impulse 축소 + 각속도 감쇠 + 기울기
+완화" 세 가지를 겸한다 — §25가 요구한 키 이상으로 늘리지 않기 위함이다.
+
+### 착지/흔들림 판정은 "보이는 위치" 기준(§12~13)
+
+`finalizeDrop()`은 더 이상 `stack`을 그대로 쓰지 않고, 매번
+`shearedStackSnapshot()`(각 레이어 x에 그 순간의 shear를 더한 임시 배열)을
+만들어 `BS.physics.evaluateStability`에 넘긴다 — PERFECT 판정의 "top 중심"도
+이 보정된 위치를 쓴다. 즉 탑이 오른쪽으로 기울어 있으면 실제로 오른쪽으로
+쏠린 면 위에 착지시켜야 SAFE가 나온다 — "두 움직임(내려오는 재료 + 흔들리는
+상단면)을 동시에 보고 맞춰야" 하는 난이도(§13)가 여기서 생긴다.
+
+### 흔들림 자체가 위험해지는 상황 (§16~18)
+
+새 재료 착지와 무관하게, **매 프레임**(`playing`/`release`/`falling` 중 —
+`settling`은 제외, 아래 참고) 현재 shear가 반영된 스택 자체의 안정성을
+`BS.physics.evaluateExistingStability`(새 함수, 새 레이어를 붙이지 않고
+기존 접점만 스캔)로 검사한다. COLLAPSE 판정이면 `COLLAPSE_GRACE_TIME`
+(100ms) 이상 머물렀을 때만 실제로 무너뜨린다 — 스프링 관성으로 경계를
+스치듯 지나가는 것까지 즉시 무너뜨리면 억울하기 때문(§18). 단
+`supportRatio`가 `COLLAPSE_SUPPORT_RATIO`의 절반 미만이거나 `normalizedMargin`
+이 -0.3 미만인 "완전히 벗어난" 경우는 grace time 없이 즉시 무너진다.
+
+`settling`(막 착지해 LAND IMPACT 연출 중)은 이 연속 체크에서 **의도적으로
+제외**했다 — 그 착지의 tier는 이미 `finalizeDrop()`이 결정했고, 그 결과에
+따른 COLLAPSE 전환은 settling 자신의 타이머가 임팩트 연출을 다 보여준 뒤
+처리한다(기존 그대로). 포함시키면 같은 프레임에 끼어들어 착지 임팩트
+연출 없이 바로 붕괴해버리는 버그가 생겨, 구현 중 실제로 이 문제를 발견하고
+제외시켰다.
+
+### 버그 수정: 착지 순간 "다른 곳에 자석처럼 붙는" 문제 (2026-10-02, 3단계로 해결)
+
+흔들림 적용 직후 "층수가 높아질수록 떨어뜨린 위치가 아니라 다른 곳에 착지해
+보인다"는 리포트가 있었고, 1차 수정 후에도 "40층 넘어가면서 더 심해진다"는
+후속 리포트가 있었다. 원인이 서로 다른 세 가지가 겹쳐 있었다.
+
+**원인 1 — 낙하 중/착지 후 shear 공식 불일치.** 낙하 중인 `current`는 shear
+없이(`c.x` 그대로) 그리다가, 착지해 `stack[]`에 들어가는 순간부터만
+`shearXFor(top)`가 적용됐다 — 낙하 마지막 프레임(shear=0)과 착지 첫 프레임
+(shear=해당 높이만큼) 사이에 즉시 큰 점프가 생겼고, 높이에 비례해 커졌다.
+**수정**: 재료가 "착지할 세로 위치"(`fallToWorldY`)는 가로 위치와 무관하게
+스폰 시점에 이미 정해지므로, `spawnNext()`에서 미리 계산해 `current.
+fallToWorldY`에 저장해두고 스폰(playing)→release→falling→착지 후
+settling·stack까지 전부 동일한 shear 공식을 그 값 기준으로 일관되게
+적용했다(`renderer.js`의 `shearXForHeight`, "빵 얹기" top_bun도 동일 적용).
+
+**원인 2 — shear 자체가 높이에 비례해 무한히 커짐.** `shearPx = height *
+tan(tilt)`에서 `tilt`는 상한이 있어도 `height`는 층수에 비례해 무한히
+커진다. 40층·6도 기울기면 약 168px, 50층·9도면 약 317px까지 치솟아
+재료 폭(135px)을 훌쩍 넘었다 — "높아질수록 다른 재료에 가로로 붙어버린다"는
+정확히 이 때문이었다(계산값이 화면 폭 근처까지 가면서 엉뚱한 재료 쪽으로
+크게 쏠려 보임). **수정**: 각도가 아니라 **shear 픽셀값 자체에 상한**을
+둔다 — `MAX_SWAY_SHEAR_RATIO`(0.5) × 재료 폭을 넘지 않도록 `swayOffsetFor
+Height`(play.js)와 `shearXForHeight`(renderer.js) 양쪽에 동일하게 클램프를
+추가했다. 층수가 아무리 높아져도 shear는 이 상한(재료 폭의 절반, 약 67.5px)
+을 넘지 않는다.
+
+**원인 3 — 착지 "같은 프레임" 안에서 스프링이 한 번 더 움직임.** 위 두
+수정을 적용한 뒤에도 고층(40+)에서 4~18px의 작은 잔여 점프가 남아 있었다.
+원인은 `finalizeDrop()`이 (a) 새 레이어를 `stack`에 push하고 (b) 착지
+balance impulse를 `stackAngularVelocity`에 더하는데, 이 둘이 모두 **같은
+update() 틱 안에서** 그 뒤에 실행되는 스프링 적분 블록에 바로 반영돼버린
+것 — 새 레이어가 COM 평균에 끼어들며 target이 바뀌고, impulse로 속도가
+바뀌어, 착지하는 바로 그 프레임의 tilt가 한 번 더(아주 살짝) 움직였다.
+높이가 크면 이 "아주 살짝"도 shear로 환산되면서 몇~십몇 px로 보였다.
+**수정**: impulse는 `pendingSwayImpulse`에 예약해뒀다가 **다음 프레임**
+시작 시점에 적용하고, 착지가 일어난 바로 그 프레임은 `swayFreezeThisFrame`
+플래그로 스프링 적분 자체를 한 프레임 건너뛴다(target 재계산도 안 함) —
+착지 프레임의 렌더링은 직전 낙하 프레임과 완전히 동일한 tilt를 쓰게 되고,
+"착지 후 반응(휘청)"은 그 다음 프레임부터 자연스럽게 이어진다.
+
+**중요**: 세 수정 모두 **시각적 표현에만** 영향을 준다 — 실제 착지 판정에
+쓰이는 `current.x`(플레이어가 실제로 놓은 절대 좌표)는 전혀 바뀌지 않았고,
+`finalizeDrop()`의 지지 구간 계산도 기존 그대로 `shearedStackSnapshot()`
+(착지 "시점"의 흔들림 반영, 역시 같은 shear 상한을 공유)을 쓴다.
+
+**검증**:
+- `tools/qa-landing-continuity.js` — 10층까지 다양한 방향으로 쌓으며 매
+  착지마다 "낙하 마지막 프레임"과 "착지 첫 프레임"의 화면 x를 비교해 점프가
+  3px 미만임을 확인(전체 통과).
+- `tools/qa-sway-highlayer.js`(신설) — 거의 완벽한 중앙 투하로 40~60층까지
+  도달해 매 층 shear가 상한(`MAX_SWAY_SHEAR_RATIO × 재료폭 = 67.5px`)을
+  넘지 않음을 확인하고, 그 높이에서 일부러 좌우로 치우치게 던져 착지
+  연속성(점프 < 3px)이 여전히 유지되는지 확인(여러 차례 재실행해도 전체
+  통과, 1차 수정만으로는 이 테스트가 4~18px 점프로 실패했었다).
+- 헤드리스 스크린샷으로 낙하~착지 구간이 끊김 없이 이어지는 것을 육안
+  확인했다.
+
+### COLLAPSE로의 매끄러운 전환
+
+흔들리던 중 COLLAPSE가 시작되면(착지로든, 위 연속 체크로든) `beginCollapse`가
+그 순간의 shear 값을 `layer.collSwayBaseX`로 저장해 회전의 "0도 시작점"으로
+삼는다 — 구조적(정지) 좌표로 순간 복귀하며 "탁" 끊기지 않고, 흔들리던
+위치에서 그대로 넘어가는 모습으로 이어진다(`rotateOffsetAroundPivot`에
+`baseOffsetX` 파라미터 추가). `beginCollapse` 호출 이후로는 `stackTilt`
+갱신이 멈춘다(`swayActive()`가 `collapsing`을 포함하지 않음) — 평상시엔
+전체 stack sway, 붕괴 후엔 개별 레이어 물리로 명확히 구분된다(§15).
+
+### 빵 얹기 완성 후
+
+`topping`/`topping-settle`/`completed` 상태에서는 `stackTilt` 갱신이
+멈춘다(마지막 값 그대로 고정) — "플레이 결과 그대로 보여준다"는 완성 화면
+원칙과 같은 맥락이다. 저장 이미지(export.js)는 원래부터 layer의 raw x만
+쓰므로 이 기울기와 무관하게 항상 수직으로 저장된다(기존 동작 유지, 이번
+기능으로 변경하지 않음).
+
+### config.js (§25 요구 항목 그대로)
+
+| 키 | 값 |
+|---|---|
+| `BALANCE_SENSITIVITY_BY_LAYER` | 1~3:0.45, 4~6:0.70, 7~9:1.05, 10~12:1.45, 13~15:1.80, 16+:2.10 |
+| `BALANCE_MAX_TILT_BY_LAYER` | 1~3:0.8°, 4~6:1.8°, 7~9:3.0°, 10~12:5.0°, 13~15:6.5°, 16+:8.0° |
+| `BALANCE_SPRING` | 220 |
+| `BALANCE_DAMPING` | 0.15(초당 유지비율) |
+| `LANDING_BALANCE_IMPULSE` | 1.6 |
+| `PERFECT_BALANCE_DAMPING` | 0.75 |
+| `TILT_COM_FACTOR` | 1.0 |
+| `COLLAPSE_GRACE_TIME` | 100ms |
+| `MAX_NORMAL_TILT` | 9.0° |
+| `BALANCE_TILT_BASE_DEG`(추가) | 11.0° |
+| `MAX_SWAY_SHEAR_RATIO`(추가, 2026-10-02 버그 수정) | 0.5(재료 폭의 50% = shear 픽셀 절대 상한) |
+
+(1차 보정값은 §5/§6 그대로 0.5/1.2/2.0/3.5/4.75/5.5°·상한 6.5°·base 8.0°였고,
+"탑이 무너지듯이" 피드백으로 위 표의 2차 보정값으로 한 번 더 올렸다.)
+
+COLLAPSE 연출도 같은 피드백으로 함께 키웠다: `COLLAPSE_BRACE_ANGLE_DEG`
+2°→3°, `COLLAPSE_TOPPLE_ANGLE_CAP_DEG` 14°→24°(§9), `COLLAPSE_DETACH_
+EXTRA_ANGLE_DEG` 20°→26°(최대 회전 50°) — 세로로 서는 90°와는 여전히
+거리를 뒀다.
+
+### QA
+
+`tools/qa-sway.js` — 명세 §19~21 TEST A~D + 완성 후 고정 확인(E), 2차 보정
+이후 재실행 결과(전체 통과):
+
+- **TEST A(중앙 위주, ±3px 손 떨림 수준 15회)**: tilt -0.14°~0.23° 범위,
+  15층까지 생존, 10° 이내로 과도하지 않음.
+- **TEST B(오른쪽으로 폭의 16%씩 반복 편향)**: tilt 1.88°→3.07°로 증가하다
+  4층에서 COLLAPSE.
+- **TEST C(초반 오른쪽 편향 후 왼쪽 보정)**: 편향 직후 1.06° → 보정 후
+  -0.07°로 중앙을 지나 반대쪽까지 회복, 즉시 무너지지 않고 생존.
+- **TEST D(11층 도달 후 1.5초간 추가 입력 없이 관찰)**: 150ms 간격 10회
+  샘플링에서 1.75°~2.22° 범위로 계속 변함(완전 정지 아님, 1차 보정 때의
+  0.19~0.32°보다 훨씬 또렷하게 체감됨).
+- **TEST E(빵 얹기 완성 후)**: completed 진입 후 500ms가 지나도 tilt가
+  소수점 셋째 자리까지 완전히 동일(더 이상 갱신되지 않음, 고정 확인).
+
+`tools/qa-collapse-angle.js`(스크래치패드)로 COLLAPSE 프레임별 각도를
+실측: 0ms 0°→200ms 12.7°→300ms 21.5°(분리 시작 직전)→400ms 27.2°(분리)
+→600ms 38.8°→1000ms 50°(상한). 스크린샷으로 확인한 결과 분리 전까지
+확실히 "옆으로 기울어 넘어가는" 모습이고, 분리 후에도 세로로 서는 각도
+근처에는 가지 않아 자연스럽다.
+
+추가로 `tools/qa-sway-visual.js`(스크래치패드)로 12층까지 실제 스크린샷을
+찍어, 베이스 대비 상단이 눈에 띄게 오른쪽으로 쏠려 보이는 "기울어진 탑"
+실루엣을 육안으로 확인했다(레이어별 tilt 0.70°→4.22°까지 분포, 1차 보정
+기준 — 2차 보정 후에는 이보다 더 크게 기운다). 기존 회귀 스위트(`qa.js`,
+`qa-topping.js`, `measure-contact-gaps.js`, `qa-floor-resize.js`) 전부
+재검증 통과 — 이번 기능이 기존 동작을 깨뜨리지 않았다.
